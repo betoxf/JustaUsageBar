@@ -1,6 +1,6 @@
 //
 //  PopoverView.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 
 import SwiftUI

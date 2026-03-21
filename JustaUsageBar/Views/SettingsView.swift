@@ -1,6 +1,6 @@
 //
 //  SettingsView.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 
 import SwiftUI

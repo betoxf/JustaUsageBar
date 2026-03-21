@@ -1,6 +1,6 @@
 //
 //  AuthWebView.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 //  Browser-based authentication with automatic session extraction
 //
@@ -94,11 +94,18 @@ struct AuthWindowView: View {
                             dismiss()
                         }
                     },
+                    onOrgIdOnly: { org in
+                        // Got org ID but not session key - switch to manual with org pre-filled
+                        organizationId = org
+                        authStatus = .failed
+                        statusMessage = "Got org ID! Just need session key."
+                        showManualEntry = true
+                    },
                     onStatusChange: { status in
                         statusMessage = status
                         if status.contains("Extracting") {
                             authStatus = .extracting
-                        } else if status.contains("Signed in") {
+                        } else if status.contains("Signed in") || status.contains("Detected") {
                             authStatus = .authenticating
                         }
                     }
@@ -113,25 +120,55 @@ struct AuthWindowView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Manual Credential Entry")
-                    .font(.system(size: 12, weight: .medium))
+                if !organizationId.isEmpty {
+                    // Org ID was auto-extracted
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Organization ID auto-detected!")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+
+                    Text("Just paste your session key below:")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Manual Credential Entry")
+                        .font(.system(size: 12, weight: .medium))
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Session Key")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
+                    Text("In Safari DevTools: Application → Cookies → sessionKey")
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary.opacity(0.7))
                     SecureField("sk-ant-sid01-...", text: $sessionKey)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Organization ID")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    TextField("UUID from URL", text: $organizationId)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
+                if organizationId.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Organization ID")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        TextField("UUID from URL", text: $organizationId)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Organization ID (auto-detected)")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        Text(organizationId)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 Button("Save & Connect") {
@@ -146,11 +183,6 @@ struct AuthWindowView: View {
             .frame(maxWidth: 300)
 
             Spacer()
-
-            Text("Get credentials from claude.ai → DevTools → Application → Cookies")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary.opacity(0.6))
-                .padding(.bottom, 12)
         }
     }
 }
@@ -159,6 +191,7 @@ struct AuthWindowView: View {
 
 struct ClaudeWebView: NSViewRepresentable {
     let onSessionExtracted: (String, String) -> Void
+    let onOrgIdOnly: (String) -> Void
     let onStatusChange: (String) -> Void
 
     func makeNSView(context: Context) -> WKWebView {
@@ -174,25 +207,82 @@ struct ClaudeWebView: NSViewRepresentable {
             webView.load(URLRequest(url: url))
         }
 
+        // Start periodic check for login state (Claude uses client-side routing)
+        context.coordinator.startPeriodicCheck(webView: webView)
+
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSessionExtracted: onSessionExtracted, onStatusChange: onStatusChange)
+        Coordinator(onSessionExtracted: onSessionExtracted, onOrgIdOnly: onOrgIdOnly, onStatusChange: onStatusChange)
     }
 
     class Coordinator: NSObject, WKNavigationDelegate {
         let onSessionExtracted: (String, String) -> Void
+        let onOrgIdOnly: (String) -> Void
         let onStatusChange: (String) -> Void
         private var hasExtracted = false
         private var extractionAttempts = 0
-        private let maxAttempts = 10
+        private let maxAttempts = 15  // More attempts since we redirect
+        private var checkTimer: Timer?
+        private weak var webViewRef: WKWebView?
+        private var extractedOrgId: String?
+        private var hasRedirectedToUsage = false
 
-        init(onSessionExtracted: @escaping (String, String) -> Void, onStatusChange: @escaping (String) -> Void) {
+        init(onSessionExtracted: @escaping (String, String) -> Void, onOrgIdOnly: @escaping (String) -> Void, onStatusChange: @escaping (String) -> Void) {
             self.onSessionExtracted = onSessionExtracted
+            self.onOrgIdOnly = onOrgIdOnly
             self.onStatusChange = onStatusChange
+        }
+
+        func startPeriodicCheck(webView: WKWebView) {
+            webViewRef = webView
+            // Check every 2 seconds if user has logged in
+            checkTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                self?.checkLoginState()
+            }
+        }
+
+        private func checkLoginState() {
+            guard let webView = webViewRef, !hasExtracted else {
+                checkTimer?.invalidate()
+                return
+            }
+
+            guard let url = webView.url else { return }
+            let urlString = url.absoluteString
+
+            // Check if we're on a logged-in page (main chat, new, etc.)
+            let isLoggedInPage = urlString.contains("claude.ai") &&
+                !urlString.contains("/login") &&
+                !urlString.contains("/signup") &&
+                !urlString.contains("/verify")
+
+            if isLoggedInPage {
+                print("Periodic check: Detected logged-in page: \(urlString)")
+
+                // Redirect to settings/usage page if not already there - cookies are fully set there
+                if !hasRedirectedToUsage && !urlString.contains("/settings/usage") {
+                    hasRedirectedToUsage = true
+                    extractionAttempts = 0  // Reset attempts for fresh start on usage page
+                    DispatchQueue.main.async {
+                        self.onStatusChange("Redirecting to usage page...")
+                    }
+                    if let usageURL = URL(string: "https://claude.ai/settings/usage") {
+                        webView.load(URLRequest(url: usageURL))
+                    }
+                    return
+                }
+
+                // We're on the usage page now, extract credentials
+                DispatchQueue.main.async {
+                    self.onStatusChange("Detected login! Extracting...")
+                }
+                checkTimer?.invalidate()
+                extractCredentials(from: webView)
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -203,12 +293,27 @@ struct ClaudeWebView: NSViewRepresentable {
 
             // Check if we're on a logged-in page (not login/signup)
             if !urlString.contains("/login") && !urlString.contains("/signup") && urlString.contains("claude.ai") {
-                // User appears to be logged in
-                DispatchQueue.main.async {
-                    self.onStatusChange("Signed in! Extracting credentials...")
+                // Redirect to settings/usage if not there yet
+                if !hasRedirectedToUsage && !urlString.contains("/settings/usage") {
+                    hasRedirectedToUsage = true
+                    extractionAttempts = 0  // Reset for fresh start
+                    DispatchQueue.main.async {
+                        self.onStatusChange("Redirecting to usage page...")
+                    }
+                    if let usageURL = URL(string: "https://claude.ai/settings/usage") {
+                        webView.load(URLRequest(url: usageURL))
+                    }
+                    return
                 }
-                extractionAttempts = 0
-                extractCredentials(from: webView)
+
+                // User appears to be logged in on usage page - wait a moment then extract
+                DispatchQueue.main.async {
+                    self.onStatusChange("On usage page! Extracting...")
+                }
+                // Small delay to ensure page is fully loaded
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.extractCredentials(from: webView)
+                }
             }
         }
 
@@ -238,18 +343,23 @@ struct ClaudeWebView: NSViewRepresentable {
             let script = """
             (async function() {
                 try {
-                    // Get organization first
-                    const orgResponse = await fetch('/api/organizations', { credentials: 'include' });
-                    if (!orgResponse.ok) return { error: 'Not logged in' };
-                    const orgs = await orgResponse.json();
-                    const orgId = orgs[0]?.uuid || '';
-
-                    // Get cookies including sessionKey
+                    // Get cookies first
                     const cookies = document.cookie.split(';').reduce((acc, c) => {
                         const [key, val] = c.trim().split('=');
-                        acc[key] = val;
+                        if (key) acc[key] = val;
                         return acc;
                     }, {});
+
+                    // Try to get org ID from lastActiveOrg cookie (faster than API)
+                    let orgId = cookies['lastActiveOrg'] || '';
+
+                    // If no cookie, try API
+                    if (!orgId) {
+                        const orgResponse = await fetch('/api/organizations', { credentials: 'include' });
+                        if (!orgResponse.ok) return { error: 'Not logged in' };
+                        const orgs = await orgResponse.json();
+                        orgId = orgs[0]?.uuid || '';
+                    }
 
                     return {
                         orgId: orgId,
@@ -277,6 +387,11 @@ struct ClaudeWebView: NSViewRepresentable {
                     let orgId = dict["orgId"] as? String ?? ""
                     let sessionKey = dict["sessionKey"] as? String ?? ""
 
+                    // Save org ID for fallback
+                    if !orgId.isEmpty {
+                        self.extractedOrgId = orgId
+                    }
+
                     if !orgId.isEmpty && !sessionKey.isEmpty {
                         self.hasExtracted = true
                         DispatchQueue.main.async {
@@ -295,6 +410,8 @@ struct ClaudeWebView: NSViewRepresentable {
         }
 
         private func tryGetSessionFromCookies(webView: WKWebView, orgId: String) {
+            extractedOrgId = orgId  // Store for fallback
+
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
                 guard let self = self else { return }
 
@@ -306,8 +423,10 @@ struct ClaudeWebView: NSViewRepresentable {
                         self.onSessionExtracted(sessionCookie.value, orgId)
                     }
                 } else {
+                    // Session cookie is HttpOnly - switch to manual with org pre-filled
+                    self.hasExtracted = true
                     DispatchQueue.main.async {
-                        self.onStatusChange("Got org ID but session cookie is HttpOnly. Use Manual entry.")
+                        self.onOrgIdOnly(orgId)
                     }
                 }
             }
@@ -315,12 +434,21 @@ struct ClaudeWebView: NSViewRepresentable {
 
         private func retryOrFallback(webView: WKWebView) {
             if extractionAttempts < maxAttempts {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                // Wait 2.5s between retries to give page time to fully load
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                     self?.extractCredentials(from: webView)
                 }
             } else {
-                DispatchQueue.main.async {
-                    self.onStatusChange("Could not extract automatically. Use Manual entry.")
+                // If we got org ID, use that
+                if let orgId = extractedOrgId, !orgId.isEmpty {
+                    hasExtracted = true
+                    DispatchQueue.main.async {
+                        self.onOrgIdOnly(orgId)
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.onStatusChange("Could not extract. Use Manual entry.")
+                    }
                 }
             }
         }

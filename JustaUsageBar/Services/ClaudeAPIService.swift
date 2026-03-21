@@ -1,6 +1,6 @@
 //
 //  ClaudeAPIService.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 
 import Foundation
@@ -20,7 +20,7 @@ enum APIError: Error, LocalizedError {
         case .invalidURL:
             return "Invalid API URL"
         case .unauthorized:
-            return "Session expired - please update your session key"
+            return "Session expired - please sign in again"
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
         case .decodingError(let error):
@@ -31,11 +31,20 @@ enum APIError: Error, LocalizedError {
     }
 }
 
+enum ClaudeAuthSource: String {
+    case none
+    case oauth
+    case webSession
+}
+
 final class ClaudeAPIService {
     static let shared = ClaudeAPIService()
 
     private let baseURL = "https://claude.ai/api/organizations"
     private let session: URLSession
+
+    /// Tracks which auth method was used for the last successful fetch
+    private(set) var lastAuthSource: ClaudeAuthSource = .none
 
     private init() {
         let config = URLSessionConfiguration.default
@@ -45,15 +54,36 @@ final class ClaudeAPIService {
         self.session = URLSession(configuration: config)
     }
 
-    // MARK: - Fetch Usage
+    // MARK: - Fetch Usage (OAuth first, then web session fallback)
 
     func fetchUsage() async throws -> UsageData {
+        // Try OAuth first
+        if ClaudeOAuthService.shared.hasCredentials {
+            do {
+                let data = try await ClaudeOAuthService.shared.fetchUsage()
+                lastAuthSource = .oauth
+                return data
+            } catch {
+                print("OAuth fetch failed, trying web session: \(error)")
+            }
+        }
+
+        // Fallback to web session cookie
+        return try await fetchUsageViaWebSession()
+    }
+
+    var hasAnyCredentials: Bool {
+        ClaudeOAuthService.shared.hasCredentials || CredentialStorage.shared.hasCredentials
+    }
+
+    // MARK: - Web Session Fetch (original method)
+
+    private func fetchUsageViaWebSession() async throws -> UsageData {
         guard let sessionKey = CredentialStorage.shared.sessionKey,
               let orgId = CredentialStorage.shared.organizationId else {
             throw APIError.noCredentials
         }
 
-        // Claude API usage endpoint
         let urlString = "\(baseURL)/\(orgId)/usage"
         guard let url = URL(string: urlString) else {
             throw APIError.invalidURL
@@ -61,8 +91,6 @@ final class ClaudeAPIService {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-
-        // Set all required headers to mimic browser request
         request.setValue("*/*", forHTTPHeaderField: "accept")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "accept-language")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -83,13 +111,13 @@ final class ClaudeAPIService {
                 throw APIError.unknown(0)
             }
 
-            // Debug: print response
             if let jsonString = String(data: data, encoding: .utf8) {
-                print("API Response (\(httpResponse.statusCode)): \(jsonString.prefix(500))")
+                print("Web API Response (\(httpResponse.statusCode)): \(jsonString.prefix(500))")
             }
 
             switch httpResponse.statusCode {
             case 200:
+                lastAuthSource = .webSession
                 return try parseUsageResponse(data)
             case 401, 403:
                 throw APIError.unauthorized
@@ -108,19 +136,13 @@ final class ClaudeAPIService {
     private func parseUsageResponse(_ data: Data) throws -> UsageData {
         var usageData = UsageData()
 
-        // Try to decode as dictionary for flexible parsing
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            // If not JSON, try to extract from text
             if let text = String(data: data, encoding: .utf8) {
                 return try parseTextResponse(text)
             }
             throw APIError.decodingError(NSError(domain: "JSON", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON"]))
         }
 
-        // Parse Claude's actual API format:
-        // {"five_hour":{"utilization":28.0,"resets_at":"..."},"seven_day":{"utilization":9.0,"resets_at":"..."}}
-
-        // Parse 5-hour rolling window
         if let fiveHour = json["five_hour"] as? [String: Any] {
             if let utilization = fiveHour["utilization"] as? Double {
                 usageData.fiveHourUsed = Int(utilization)
@@ -131,7 +153,6 @@ final class ClaudeAPIService {
             }
         }
 
-        // Parse 7-day (weekly) limit
         if let sevenDay = json["seven_day"] as? [String: Any] {
             if let utilization = sevenDay["utilization"] as? Double {
                 usageData.weeklyUsed = Int(utilization)
@@ -147,8 +168,6 @@ final class ClaudeAPIService {
 
     private func parseTextResponse(_ text: String) throws -> UsageData {
         var usageData = UsageData()
-
-        // Try to extract percentage from text (e.g., "27% used")
         let percentPattern = #"(\d+)%\s*used"#
         if let regex = try? NSRegularExpression(pattern: percentPattern, options: .caseInsensitive),
            let match = regex.firstMatch(in: text, options: [], range: NSRange(text.startIndex..., in: text)),
@@ -158,40 +177,21 @@ final class ClaudeAPIService {
                 usageData.fiveHourLimit = 100
             }
         }
-
         return usageData
     }
 
     private func parseDate(_ string: String) -> Date? {
-        // Try ISO8601 first
         let iso8601 = ISO8601DateFormatter()
         iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso8601.date(from: string) {
-            return date
-        }
-
-        // Try without fractional seconds
+        if let date = iso8601.date(from: string) { return date }
         iso8601.formatOptions = [.withInternetDateTime]
-        if let date = iso8601.date(from: string) {
-            return date
-        }
+        if let date = iso8601.date(from: string) { return date }
 
-        // Try common formats
         let dateFormatter = DateFormatter()
-        let formats = [
-            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-            "yyyy-MM-dd'T'HH:mm:ssZ",
-            "yyyy-MM-dd HH:mm:ss",
-            "EEE MMM d HH:mm:ss yyyy"
-        ]
-
-        for format in formats {
+        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSSZ", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss", "EEE MMM d HH:mm:ss yyyy"] {
             dateFormatter.dateFormat = format
-            if let date = dateFormatter.date(from: string) {
-                return date
-            }
+            if let date = dateFormatter.date(from: string) { return date }
         }
-
         return nil
     }
 }

@@ -1,6 +1,6 @@
 //
 //  UsageData.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 
 import Foundation

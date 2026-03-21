@@ -1,12 +1,12 @@
 //
-//  ClaudeUsageBarApp.swift
-//  ClaudeUsageBar
+//  JustaUsageBarApp.swift
+//  JustaUsageBar
 //
 
 import SwiftUI
 
 @main
-struct ClaudeUsageBarApp: App {
+struct JustaUsageBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

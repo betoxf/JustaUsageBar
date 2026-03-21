@@ -1,6 +1,6 @@
 //
 //  CredentialStorage.swift
-//  ClaudeUsageBar
+//  JustaUsageBar
 //
 //  Encrypted file-based credential storage (no Keychain prompts)
 //
@@ -60,7 +60,7 @@ final class CredentialStorage {
 
     private var credentialsFileURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appFolder = appSupport.appendingPathComponent("ClaudeUsageBar", isDirectory: true)
+        let appFolder = appSupport.appendingPathComponent("JustaUsageBar", isDirectory: true)
 
         // Create directory if needed
         try? FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: true)
@@ -105,7 +105,7 @@ final class CredentialStorage {
         // Generate a deterministic key based on machine-specific info
         // This ensures only this machine can decrypt the credentials
         let machineId = getMachineIdentifier()
-        let salt = "ClaudeUsageBar.v1"
+        let salt = "JustaUsageBar.v1"
         let keyMaterial = "\(machineId).\(salt)"
 
         // Use SHA256 to derive a 256-bit key

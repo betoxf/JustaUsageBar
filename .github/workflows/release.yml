@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build Release
+        run: |
+          xcodebuild -project JustaUsageBar.xcodeproj \
+            -scheme JustaUsageBar \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            build
+
+      - name: Create zip
+        run: |
+          mkdir -p build/Release
+          cp -R build/DerivedData/Build/Products/Release/JustaUsageBar.app build/Release/
+          cd build/Release && zip -r ../../JustaUsageBar.zip JustaUsageBar.app
+
+      - name: Get SHA256
+        id: sha
+        run: echo "sha256=$(shasum -a 256 JustaUsageBar.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: JustaUsageBar.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
