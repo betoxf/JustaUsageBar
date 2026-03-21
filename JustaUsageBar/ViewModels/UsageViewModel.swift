@@ -67,10 +67,18 @@ final class UsageViewModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var timer: Timer?
 
+    @AppStorage("hasLaunchedBefore") private var hasLaunchedBefore: Bool = false
+
     private init() {
         // Auto-detect credentials on launch
         detectCredentials()
         startAutoRefresh()
+
+        // Enable Launch at Login on first launch
+        if !hasLaunchedBefore {
+            hasLaunchedBefore = true
+            launchAtStartup = true
+        }
     }
 
     // MARK: - Credential Detection
