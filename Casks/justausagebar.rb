@@ -12,8 +12,9 @@ cask "justausagebar" do
   app "JustaUsageBar.app"
 
   postflight do
-    # Ensure the app is registered for launch services
-    system_command "/usr/bin/open", args: ["-g", "-a", "#{appdir}/JustaUsageBar.app", "--args", "--background"]
+    # Remove quarantine flag so Gatekeeper doesn't block the unsigned app
+    system_command "/usr/bin/xattr",
+                   args: ["-cr", "#{appdir}/JustaUsageBar.app"]
   end
 
   zap trash: [
