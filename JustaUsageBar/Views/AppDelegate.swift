@@ -11,6 +11,7 @@ enum DisplayProvider {
     case codex
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
@@ -471,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         providerSwitchTimer = Timer.scheduledTimer(withTimeInterval: viewModel.animationInterval, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.beginTransition()
             }
         }
@@ -505,19 +506,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let frameDuration: TimeInterval = 1.0 / 60.0
 
         transitionTimer = Timer.scheduledTimer(withTimeInterval: frameDuration, repeats: true) { [weak self] timer in
-            guard let self = self else { timer.invalidate(); return }
+            Task { @MainActor in
+                guard let self = self else { timer.invalidate(); return }
 
-            self.transitionProgress += 1.0 / totalFrames
+                self.transitionProgress += 1.0 / totalFrames
 
-            if self.transitionProgress >= 1.0 {
-                self.transitionProgress = 1.0
-                timer.invalidate()
-                self.transitionTimer = nil
-                self.isTransitioning = false
-                self.currentProvider = (self.currentProvider == .claude) ? .codex : .claude
-                self.updateStatusImage()
-            } else {
-                self.renderTransitionFrame()
+                if self.transitionProgress >= 1.0 {
+                    self.transitionProgress = 1.0
+                    timer.invalidate()
+                    self.transitionTimer = nil
+                    self.isTransitioning = false
+                    self.currentProvider = (self.currentProvider == .claude) ? .codex : .claude
+                    self.updateStatusImage()
+                } else {
+                    self.renderTransitionFrame()
+                }
             }
         }
     }
