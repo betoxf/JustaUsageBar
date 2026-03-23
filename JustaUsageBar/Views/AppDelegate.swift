@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var transitionTimer: Timer?
     private var transitionProgress: CGFloat = 0
     private var isTransitioning = false
+    private var codexGradientAnimationTimer: Timer?
+    private var codexGradientOffset: CGFloat = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -82,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if viewModel.hasCredentials {
             updateStatusImage()
             startProviderAnimation()
+            if viewModel.showCodex {
+                startCodexGradientAnimation()
+            }
         } else {
             showSetupStatus()
         }
@@ -91,6 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.isVisible = true
+
+        // Add click handler to toggle providers
+        if let button = statusItem.button {
+            button.action = #selector(statusBarButtonClicked)
+            button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
     }
 
     private func showSetupStatus() {
@@ -164,11 +176,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if hasClaude && viewModel.showClaude {
                 let claudeHeader = NSMenuItem(title: "Claude", action: nil, keyEquivalent: "")
                 claudeHeader.isEnabled = false
-                let headerAttrs: [NSAttributedString.Key: Any] = [
+                let anthropicOrange = NSColor(red: 0.83, green: 0.53, blue: 0.30, alpha: 1.0)
+
+                // Build header with auth method
+                let authMethod = viewModel.claudeAuthSource == .oauth ? "via CLI" : "via Browser"
+
+                let headerString = NSMutableAttributedString()
+                headerString.append(NSAttributedString(string: "\u{2733}\u{FE0E} Claude  ", attributes: [
                     .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-                    .foregroundColor: NSColor(red: 0.83, green: 0.53, blue: 0.30, alpha: 1.0)
-                ]
-                claudeHeader.attributedTitle = NSAttributedString(string: "\u{2733}\u{FE0E} Claude", attributes: headerAttrs)
+                    .foregroundColor: anthropicOrange
+                ]))
+                headerString.append(NSAttributedString(string: "  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
+                ]))
+                headerString.append(NSAttributedString(string: authMethod, attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor
+                ]))
+
+                claudeHeader.attributedTitle = headerString
                 menu.addItem(claudeHeader)
 
                 let fiveHour = viewModel.usageData.fiveHourUsed
@@ -176,29 +202,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let fiveHourReset = viewModel.usageData.timeUntilFiveHourReset
                 let weeklyReset = viewModel.usageData.timeUntilWeeklyReset
 
+                // Styled percentage items
+                let fiveHourColor: NSColor = (fiveHour == 0 || fiveHour >= 90) ? anthropicOrange : NSColor.labelColor
+                let weeklyColor: NSColor = (weekly == 0 || weekly >= 80) ? anthropicOrange : NSColor.labelColor
+
                 let fiveHourItem = NSMenuItem(title: "  5h: \(fiveHour)%  \u{2022}  \(fiveHourReset)", action: nil, keyEquivalent: "")
                 fiveHourItem.isEnabled = false
+                let fiveHourAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .regular)
+                ]
+                let fiveHourString = NSMutableAttributedString(string: "  5h: ", attributes: fiveHourAttrs)
+                fiveHourString.append(NSAttributedString(string: "\(fiveHour)", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: fiveHourColor
+                ]))
+                fiveHourString.append(NSAttributedString(string: "%  \u{2022}  \(fiveHourReset)", attributes: fiveHourAttrs))
+                fiveHourItem.attributedTitle = fiveHourString
                 menu.addItem(fiveHourItem)
 
                 let weeklyItem = NSMenuItem(title: "  7d: \(weekly)%  \u{2022}  \(weeklyReset)", action: nil, keyEquivalent: "")
                 weeklyItem.isEnabled = false
+                let weeklyAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .regular)
+                ]
+                let weeklyString = NSMutableAttributedString(string: "  7d: ", attributes: weeklyAttrs)
+                weeklyString.append(NSAttributedString(string: "\(weekly)", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: weeklyColor
+                ]))
+                weeklyString.append(NSAttributedString(string: "%  \u{2022}  \(weeklyReset)", attributes: weeklyAttrs))
+                weeklyItem.attributedTitle = weeklyString
                 menu.addItem(weeklyItem)
 
-                // Auth source indicator
-                let sourceLabel: String
-                switch viewModel.claudeAuthSource {
-                case .oauth: sourceLabel = "  via CLI (OAuth)"
-                case .webSession: sourceLabel = "  via Browser Session"
-                case .none: sourceLabel = "  not connected"
-                }
-                let sourceItem = NSMenuItem(title: sourceLabel, action: nil, keyEquivalent: "")
-                sourceItem.isEnabled = false
-                let sourceAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 10),
-                    .foregroundColor: NSColor.secondaryLabelColor
-                ]
-                sourceItem.attributedTitle = NSAttributedString(string: sourceLabel, attributes: sourceAttrs)
-                menu.addItem(sourceItem)
             }
 
             // Codex usage section
@@ -209,34 +244,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let codexHeader = NSMenuItem(title: "Codex", action: nil, keyEquivalent: "")
                 codexHeader.isEnabled = false
-                let headerAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .heavy),
-                    .foregroundColor: NSColor.labelColor
-                ]
-                codexHeader.attributedTitle = NSAttributedString(string: "Codex", attributes: headerAttrs)
+                let codexBlue = NSColor(red: 0.0, green: 0.4, blue: 1.0, alpha: 1.0)
+
+                // Build header with plan type
+                let codex = viewModel.codexUsageData
+                let planInfo = codex.planType != "unknown" ? codex.planType.capitalized : ""
+
+                let headerString = NSMutableAttributedString()
+                headerString.append(NSAttributedString(string: "Codex  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                    .foregroundColor: codexBlue
+                ]))
+                headerString.append(NSAttributedString(string: "  ", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
+                ]))
+                if !planInfo.isEmpty {
+                    headerString.append(NSAttributedString(string: planInfo, attributes: [
+                        .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+                        .foregroundColor: NSColor.secondaryLabelColor
+                    ]))
+                }
+
+                codexHeader.attributedTitle = headerString
                 menu.addItem(codexHeader)
 
-                let codex = viewModel.codexUsageData
                 let primaryLabel = codex.primaryWindowLabel
-                let primaryItem = NSMenuItem(title: "  \(primaryLabel): \(codex.primaryUsedPercent)%  \u{2022}  \(codex.timeUntilPrimaryReset)", action: nil, keyEquivalent: "")
+                let primary = codex.primaryUsedPercent
+                let primaryReset = codex.timeUntilPrimaryReset
+
+                let primaryColor: NSColor = (primary == 0 || primary >= 90) ? codexBlue : NSColor.labelColor
+
+                let primaryItem = NSMenuItem(title: "  \(primaryLabel): \(primary)%  \u{2022}  \(primaryReset)", action: nil, keyEquivalent: "")
                 primaryItem.isEnabled = false
+                let primaryAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .regular)
+                ]
+                let primaryString = NSMutableAttributedString(string: "  \(primaryLabel): ", attributes: primaryAttrs)
+                primaryString.append(NSAttributedString(string: "\(primary)", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: primaryColor
+                ]))
+                primaryString.append(NSAttributedString(string: "%  \u{2022}  \(primaryReset)", attributes: primaryAttrs))
+                primaryItem.attributedTitle = primaryString
                 menu.addItem(primaryItem)
 
                 if codex.secondaryUsedPercent > 0 || codex.secondaryResetAt != nil {
-                    let secondaryItem = NSMenuItem(title: "  7d: \(codex.secondaryUsedPercent)%  \u{2022}  \(codex.timeUntilSecondaryReset)", action: nil, keyEquivalent: "")
-                    secondaryItem.isEnabled = false
-                    menu.addItem(secondaryItem)
-                }
+                    let secondary = codex.secondaryUsedPercent
+                    let secondaryReset = codex.timeUntilSecondaryReset
+                    let secondaryColor: NSColor = (secondary == 0 || secondary >= 80) ? codexBlue : NSColor.labelColor
 
-                if codex.planType != "unknown" {
-                    let planItem = NSMenuItem(title: "  Plan: \(codex.planType.capitalized)", action: nil, keyEquivalent: "")
-                    planItem.isEnabled = false
-                    let planAttrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 10),
-                        .foregroundColor: NSColor.secondaryLabelColor
-                    ]
-                    planItem.attributedTitle = NSAttributedString(string: "  Plan: \(codex.planType.capitalized)", attributes: planAttrs)
-                    menu.addItem(planItem)
+                    let secondaryItem = NSMenuItem(title: "  7d: \(secondary)%  \u{2022}  \(secondaryReset)", action: nil, keyEquivalent: "")
+                    secondaryItem.isEnabled = false
+                    let secondaryString = NSMutableAttributedString(string: "  7d: ", attributes: primaryAttrs)
+                    secondaryString.append(NSAttributedString(string: "\(secondary)", attributes: [
+                        .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                        .foregroundColor: secondaryColor
+                    ]))
+                    secondaryString.append(NSAttributedString(string: "%  \u{2022}  \(secondaryReset)", attributes: primaryAttrs))
+                    secondaryItem.attributedTitle = secondaryString
+                    menu.addItem(secondaryItem)
                 }
             }
 
@@ -337,11 +403,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Check for Updates
+        let updateItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdates), keyEquivalent: "u")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
     }
 
     // MARK: - Menu Actions
+
+    @objc private func statusBarButtonClicked() {
+        let event = NSApp.currentEvent
+
+        // Right click shows menu
+        if event?.type == .rightMouseUp {
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            return
+        }
+
+        // Left click toggles provider if both are shown
+        if event?.type == .leftMouseUp {
+            if viewModel.shouldAnimateProviders {
+                // Temporarily stop animation and switch provider
+                stopProviderAnimation()
+                currentProvider = (currentProvider == .claude) ? .codex : .claude
+                updateStatusImage()
+                startProviderAnimation()
+                if currentProvider == .codex {
+                    startCodexGradientAnimation()
+                }
+            } else {
+                // If not animating, just show menu
+                statusItem.menu = menu
+                statusItem.button?.performClick(nil)
+            }
+        }
+    }
 
     @objc private func showCredentialsWindow() {
         if credentialsWindow == nil {
@@ -456,6 +556,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func checkForUpdates() {
+        Task {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/brew")
+            process.arguments = ["upgrade", "betoxf/tap/justausagebar"]
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+
+                if process.terminationStatus == 0 && !output.contains("already installed") {
+                    // Updated — relaunch the app
+                    let appURL = Bundle.main.bundleURL
+                    let config = NSWorkspace.OpenConfiguration()
+                    config.createsNewApplicationInstance = true
+                    NSWorkspace.shared.openApplication(at: appURL, configuration: config) { _, _ in
+                        NSApp.terminate(nil)
+                    }
+                } else {
+                    // Already up to date — show brief notification via menu
+                    let alert = NSAlert()
+                    alert.messageText = "Already up to date"
+                    alert.informativeText = "JustaUsageBar is on the latest version."
+                    alert.alertStyle = .informational
+                    alert.runModal()
+                }
+            } catch {
+                // brew not at /opt/homebrew — try /usr/local
+                let fallback = Process()
+                fallback.executableURL = URL(fileURLWithPath: "/usr/local/bin/brew")
+                fallback.arguments = ["upgrade", "betoxf/tap/justausagebar"]
+                let fallbackPipe = Pipe()
+                fallback.standardOutput = fallbackPipe
+                fallback.standardError = fallbackPipe
+
+                do {
+                    try fallback.run()
+                    fallback.waitUntilExit()
+
+                    let data = fallbackPipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+
+                    if fallback.terminationStatus == 0 && !output.contains("already installed") {
+                        let appURL = Bundle.main.bundleURL
+                        let config = NSWorkspace.OpenConfiguration()
+                        config.createsNewApplicationInstance = true
+                        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { _, _ in
+                            NSApp.terminate(nil)
+                        }
+                    } else {
+                        let alert = NSAlert()
+                        alert.messageText = "Already up to date"
+                        alert.informativeText = "JustaUsageBar is on the latest version."
+                        alert.alertStyle = .informational
+                        alert.runModal()
+                    }
+                } catch {
+                    let alert = NSAlert()
+                    alert.messageText = "Update failed"
+                    alert.informativeText = "Could not find Homebrew. Run in terminal:\nbrew upgrade betoxf/tap/justausagebar"
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     // MARK: - Provider Animation
 
     private func startProviderAnimation() {
@@ -483,6 +657,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         providerSwitchTimer = nil
         transitionTimer?.invalidate()
         transitionTimer = nil
+        codexGradientAnimationTimer?.invalidate()
+        codexGradientAnimationTimer = nil
         isTransitioning = false
         transitionProgress = 0
     }
@@ -491,7 +667,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopProviderAnimation()
         if viewModel.hasCredentials {
             startProviderAnimation()
+            if viewModel.showCodex {
+                startCodexGradientAnimation()
+            }
             updateStatusImage()
+        }
+    }
+
+    private func startCodexGradientAnimation() {
+        codexGradientAnimationTimer?.invalidate()
+        codexGradientAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self,
+                      self.currentProvider == .codex,
+                      !self.isTransitioning else { return }
+                self.codexGradientOffset += 0.02
+                if self.codexGradientOffset >= 1.0 {
+                    self.codexGradientOffset = 0
+                }
+                self.updateStatusImage()
+            }
         }
     }
 
@@ -723,17 +918,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let textColor = isDarkMode ? NSColor.white : NSColor(white: 0.25, alpha: 1.0)
         let codexBrandColor = isDarkMode ? NSColor.white : NSColor(white: 0.1, alpha: 1.0)
 
+        // Codex blue/purple gradient colors (OpenAI-style)
+        let codexBlue = NSColor(red: 0.0, green: 0.4, blue: 1.0, alpha: 1.0) // Bright blue
+        let codexPurple = NSColor(red: 0.5, green: 0.0, blue: 1.0, alpha: 1.0) // Purple
+        let codexCyan = NSColor(red: 0.0, green: 0.7, blue: 1.0, alpha: 1.0) // Cyan tint
+
         var yOffset: CGFloat = 0
 
         if showIcon {
-            // "CODEX" in heavy font — no icon
-            let codexLabelAttributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 7.5, weight: .heavy),
-                .foregroundColor: codexBrandColor
-            ]
-            let codexLabel = NSAttributedString(string: "Codex", attributes: codexLabelAttributes)
-            let labelX = (width - codexLabel.size().width) / 2
-            codexLabel.draw(at: NSPoint(x: labelX, y: 12))
+            // Draw "Codex" with lighter weight and animated gradient
+            let codexText = "Codex"
+            let letterSpacing: CGFloat = 0.5
+
+            // Calculate total width for centering
+            let font = NSFont.systemFont(ofSize: 7, weight: .semibold)
+            var totalWidth: CGFloat = 0
+            for char in codexText {
+                let charStr = String(char)
+                let attrs: [NSAttributedString.Key: Any] = [.font: font]
+                let charSize = charStr.size(withAttributes: attrs)
+                totalWidth += charSize.width + letterSpacing
+            }
+            totalWidth -= letterSpacing
+
+            var currentX = (width - totalWidth) / 2
+
+            // Draw each character with gradient color based on position
+            for (index, char) in codexText.enumerated() {
+                let charStr = String(char)
+                let charAttrs: [NSAttributedString.Key: Any] = [.font: font]
+                let charSize = charStr.size(withAttributes: charAttrs)
+
+                let charColor: NSColor
+                if index == 0 {
+                    // "C" stays as base color (black/white), no animation
+                    charColor = codexBrandColor
+                } else {
+                    // "odex" get animated gradient
+                    let charPos = CGFloat(index - 1) / 4.0 // Normalize to 0-1 across "odex"
+                    let gradientPos = (charPos + codexGradientOffset).truncatingRemainder(dividingBy: 1.0)
+                    charColor = interpolateGradient(
+                        position: gradientPos,
+                        colors: [codexBlue, codexCyan, codexPurple]
+                    )
+                }
+
+                let charDrawAttrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: charColor
+                ]
+
+                charStr.draw(at: NSPoint(x: currentX, y: 12), withAttributes: charDrawAttrs)
+                currentX += charSize.width + letterSpacing
+            }
+
             yOffset = 0
         } else {
             yOffset = 3
@@ -743,9 +981,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let primary = codex.primaryUsedPercent
         let secondary = codex.secondaryUsedPercent
 
-        let openaiGreen = NSColor(red: 0.063, green: 0.639, blue: 0.498, alpha: 1.0) // #10a37f
-        let primaryColor: NSColor = (primary == 0 || primary >= 90) ? openaiGreen : textColor
-        let secondaryColor: NSColor = (secondary == 0 || secondary >= 80) ? openaiGreen : textColor
+        // Use gradient colors for percentages based on usage
+        let primaryColor = getGradientColorForValue(primary, gradientOffset: codexGradientOffset, baseColor: codexBlue, accentColor: codexPurple, textColor: textColor)
+        let secondaryColor = getGradientColorForValue(secondary, gradientOffset: codexGradientOffset + 0.3, baseColor: codexBlue, accentColor: codexCyan, textColor: textColor)
 
         let tinyLabelAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 6, weight: .regular),
@@ -792,6 +1030,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.unlockFocus()
         image.isTemplate = false
         return (image, width)
+    }
+
+    // Helper: Interpolate between gradient colors based on position
+    private func interpolateGradient(position: CGFloat, colors: [NSColor]) -> NSColor {
+        guard !colors.isEmpty else { return NSColor.white }
+        guard colors.count > 1 else { return colors[0] }
+
+        let scaledPos = position * CGFloat(colors.count - 1)
+        let index = Int(scaledPos)
+        let localPos = scaledPos - CGFloat(index)
+
+        guard index < colors.count - 1 else { return colors.last! }
+
+        let color1 = colors[index]
+        let color2 = colors[index + 1]
+
+        let r = color1.redComponent + (color2.redComponent - color1.redComponent) * localPos
+        let g = color1.greenComponent + (color2.greenComponent - color1.greenComponent) * localPos
+        let b = color1.blueComponent + (color2.blueComponent - color1.blueComponent) * localPos
+
+        return NSColor(red: r, green: g, blue: b, alpha: 1.0)
+    }
+
+    // Helper: Get gradient color for a value (with animation for accent values)
+    private func getGradientColorForValue(_ value: Int, gradientOffset: CGFloat, baseColor: NSColor, accentColor: NSColor, textColor: NSColor) -> NSColor {
+        // Use gradient for special cases (0% or high usage), otherwise use text color
+        if value == 0 || value >= 90 {
+            let pos = gradientOffset.truncatingRemainder(dividingBy: 1.0)
+            return interpolateGradient(position: pos, colors: [baseColor, accentColor])
+        }
+        return textColor
     }
 
     // MARK: - Helpers
