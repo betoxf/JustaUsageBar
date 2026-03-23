@@ -196,7 +196,7 @@ final class UsageViewModel: ObservableObject {
 
     /// Whether both providers are active and should animate
     var shouldAnimateProviders: Bool {
-        showClaude && showCodex && hasClaudeCredentials && hasCodexCredentials
+        showClaude && showCodex && hasClaudeCredentials && hasCodexCredentials && animationInterval > 0
     }
 
     func saveCredentials(sessionKey: String, organizationId: String) {

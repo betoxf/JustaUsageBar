@@ -354,12 +354,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     displayMenu.addItem(NSMenuItem.separator())
 
                     let intervalMenu = NSMenu()
+
+                    // Add Manual option (tag = 0 means no auto-switching)
+                    let manualItem = NSMenuItem(title: "Manual", action: #selector(setAnimationInterval(_:)), keyEquivalent: "")
+                    manualItem.target = self
+                    manualItem.tag = 0
+                    manualItem.state = (viewModel.animationInterval == 0) ? .on : .off
+                    intervalMenu.addItem(manualItem)
+
+                    intervalMenu.addItem(NSMenuItem.separator())
+
                     for seconds: Double in [5, 8, 10, 15, 30] {
                         let label = seconds < 60 ? "\(Int(seconds))s" : "\(Int(seconds / 60))m"
                         let item = NSMenuItem(title: label, action: #selector(setAnimationInterval(_:)), keyEquivalent: "")
                         item.target = self
                         item.tag = Int(seconds)
-                        item.state = (Int(viewModel.animationInterval) == Int(seconds)) ? .on : .off
+                        item.state = (viewModel.animationInterval == seconds) ? .on : .off
                         intervalMenu.addItem(item)
                     }
 
@@ -427,10 +437,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Left click toggles provider if both are shown
         if event?.type == .leftMouseUp {
-            if viewModel.shouldAnimateProviders {
-                // Switch provider immediately
+            let hasBoth = viewModel.hasClaudeCredentials && viewModel.hasCodexCredentials &&
+                          viewModel.showClaude && viewModel.showCodex
+
+            if hasBoth {
+                // Switch provider immediately (manual mode or auto mode)
                 currentProvider = (currentProvider == .claude) ? .codex : .claude
                 updateStatusImage()
+                if currentProvider == .codex {
+                    startCodexGradientAnimation()
+                }
             } else {
                 // If only one provider, show menu
                 statusItem.menu = menu
