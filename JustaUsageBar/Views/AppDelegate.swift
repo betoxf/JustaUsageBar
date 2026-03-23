@@ -158,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenu() {
         menu = NSMenu()
         rebuildMenu()
-        statusItem.menu = menu
+        // Don't set statusItem.menu - we handle clicks manually
     }
 
     private func rebuildMenu() {
@@ -244,7 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let codexHeader = NSMenuItem(title: "Codex", action: nil, keyEquivalent: "")
                 codexHeader.isEnabled = false
-                let codexBlue = NSColor(red: 0.0, green: 0.4, blue: 1.0, alpha: 1.0)
+                let codexBlue = NSColor(red: 0.1, green: 0.2, blue: 0.5, alpha: 1.0)
 
                 // Build header with plan type
                 let codex = viewModel.codexUsageData
@@ -421,24 +421,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if event?.type == .rightMouseUp {
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
+            statusItem.menu = nil
             return
         }
 
         // Left click toggles provider if both are shown
         if event?.type == .leftMouseUp {
             if viewModel.shouldAnimateProviders {
-                // Temporarily stop animation and switch provider
-                stopProviderAnimation()
+                // Switch provider immediately
                 currentProvider = (currentProvider == .claude) ? .codex : .claude
                 updateStatusImage()
-                startProviderAnimation()
-                if currentProvider == .codex {
-                    startCodexGradientAnimation()
-                }
             } else {
-                // If not animating, just show menu
+                // If only one provider, show menu
                 statusItem.menu = menu
                 statusItem.button?.performClick(nil)
+                statusItem.menu = nil
             }
         }
     }
@@ -676,12 +673,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startCodexGradientAnimation() {
         codexGradientAnimationTimer?.invalidate()
-        codexGradientAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        codexGradientAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self,
                       self.currentProvider == .codex,
                       !self.isTransitioning else { return }
-                self.codexGradientOffset += 0.02
+                self.codexGradientOffset += 0.01 // Slower increment
                 if self.codexGradientOffset >= 1.0 {
                     self.codexGradientOffset = 0
                 }
@@ -918,10 +915,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let textColor = isDarkMode ? NSColor.white : NSColor(white: 0.25, alpha: 1.0)
         let codexBrandColor = isDarkMode ? NSColor.white : NSColor(white: 0.1, alpha: 1.0)
 
-        // Codex blue/purple gradient colors (OpenAI-style)
-        let codexBlue = NSColor(red: 0.0, green: 0.4, blue: 1.0, alpha: 1.0) // Bright blue
-        let codexPurple = NSColor(red: 0.5, green: 0.0, blue: 1.0, alpha: 1.0) // Purple
-        let codexCyan = NSColor(red: 0.0, green: 0.7, blue: 1.0, alpha: 1.0) // Cyan tint
+        // Codex blue/purple gradient colors (subtle, darker)
+        let codexBlue = NSColor(red: 0.1, green: 0.2, blue: 0.5, alpha: 1.0) // Darker blue
+        let codexPurple = NSColor(red: 0.3, green: 0.1, blue: 0.5, alpha: 1.0) // Darker purple
+        let codexCyan = NSColor(red: 0.1, green: 0.3, blue: 0.5, alpha: 1.0) // Darker cyan tint
 
         var yOffset: CGFloat = 0
 
